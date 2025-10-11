@@ -5,13 +5,13 @@ import traceback
 import streamlit as st
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 import pandas as pd
 from io import BytesIO
 from pathlib import Path
 
-APP_TITLE = "Cihaz Arıza Takip — Basit (Safe/Diagnostic)"
+APP_TITLE = "Cihaz Arıza Takip — Basit (MVP)"
 # HOME first, then /tmp
 HOME_DIR = Path.home() / ".lab_downtime"
 try:
@@ -63,23 +63,21 @@ def device_exists_ci(conn, name_norm: str) -> bool:
     cur = conn.execute("SELECT 1 FROM devices WHERE lower(name)=lower(?) LIMIT 1", (name_norm,))
     return cur.fetchone() is not None
 
-def device_count(conn) -> int:
-    cur = conn.execute("SELECT COUNT(*) AS c FROM devices")
-    return int(cur.fetchone()["c"])
+def to_local_datetime(date_val, time_val):
+    """Combine date + time into a timezone-aware local datetime."""
+    dt = datetime.combine(date_val, time_val)
+    return dt.replace(tzinfo=TZ)
 
 def page_devices():
     st.subheader("Cihazlar")
     p = Path(DB_PATH)
-    parent = p.parent
-    p_exists = p.exists()
-    size_info = (str(p.stat().st_size) + " B") if p_exists else "yok"
-    st.caption(f"Veritabanı: `{DB_PATH}` — dosya: {size_info} — klasör yazılabilir: {os.access(parent, os.W_OK)}")
-
-    with st.form(key="add_dev_form", clear_on_submit=True):
-        raw_name = st.text_input("Yeni cihaz adı", placeholder="Örn. Cobas t711")
+    size_info = (str(p.stat().st_size) + " B") if p.exists() else "yok"
+    st.caption(f"Veritabanı: `{DB_PATH}` — dosya: {size_info}")
+    with st.form("add_dev", clear_on_submit=True):
+        raw = st.text_input("Yeni cihaz adı", placeholder="Örn. Cobas t711")
         submit = st.form_submit_button("Cihaz Ekle")
     if submit:
-        name = normalize_name(raw_name)
+        name = normalize_name(raw)
         if not name:
             st.error("Cihaz adı zorunludur.")
         else:
@@ -88,37 +86,19 @@ def page_devices():
                     if device_exists_ci(conn, name):
                         st.warning("Bu cihaz adı zaten mevcut.")
                     else:
-                        conn.execute("INSERT INTO devices(name, created_at) VALUES (?, ?)", (name, datetime.now(timezone.utc).isoformat()))
+                        conn.execute("INSERT INTO devices(name, created_at) VALUES (?, ?)",
+                                     (name, datetime.now(timezone.utc).isoformat()))
                         conn.commit()
-                        cnt = device_count(conn)
-                        st.success(f"Eklendi: '{name}'. Toplam cihaz: {cnt}")
+                        st.success(f"Eklendi: {name}")
             except Exception as e:
-                st.error(f"Cihaz ekleme hatası: {e}")
-                with st.expander("Teknik ayrıntı"):
+                st.error(f"Ekleme hatası: {e}")
+                with st.expander("Ayrıntı"):
                     st.code(traceback.format_exc())
 
-    if st.button("🔧 Yazma Testi (TEST cihazı ekle)"):
-        test_name = f"TEST-{int(datetime.now().timestamp())}"
-        try:
-            with closing(get_conn()) as conn:
-                conn.execute("INSERT INTO devices(name, created_at) VALUES (?, ?)", (test_name, datetime.now(timezone.utc).isoformat()))
-                conn.commit()
-                cnt = device_count(conn)
-            st.success(f"TEST cihaz eklendi: {test_name} — Toplam cihaz: {cnt}")
-        except Exception as e:
-            st.error(f"Yazma testi başarısız: {e}")
-            with st.expander("Teknik ayrıntı"):
-                st.code(traceback.format_exc())
-
+    with closing(get_conn()) as conn:
+        df = pd.read_sql_query("SELECT id, name, created_at FROM devices ORDER BY id DESC", conn)
     st.markdown("### Mevcut Cihazlar")
-    try:
-        with closing(get_conn()) as conn:
-            df = pd.read_sql_query("SELECT id, name, created_at FROM devices ORDER BY id DESC", conn)
-        st.dataframe(df, use_container_width=True)
-    except Exception as e:
-        st.error(f"Kayıtları okuma hatası: {e}")
-        with st.expander("Teknik ayrıntı"):
-            st.code(traceback.format_exc())
+    st.dataframe(df, use_container_width=True)
 
 def page_new_fault():
     st.subheader("Arıza Kaydı (Ekle)")
@@ -130,13 +110,20 @@ def page_new_fault():
     device_map = {d["name"]: d["id"] for d in devs}
     dev_label = st.selectbox("Cihaz", list(device_map.keys()))
     reason = st.text_input("Arıza nedeni (opsiyonel)")
-    now_local = datetime.now(TZ).replace(second=0, microsecond=0)
+
+    # --- Datetime inputs with separate date + time ---
+    now_local = datetime.now(TZ)
     c1, c2 = st.columns(2)
     with c1:
-        start_local = st.datetime_input("Başlangıç (yerel)", value=now_local)
+        start_date = st.date_input("Başlangıç tarihi", value=now_local.date(), key="st_date")
+        start_time = st.time_input("Başlangıç saati", value=time(hour=now_local.hour, minute=now_local.minute), key="st_time")
     with c2:
-        end_local = st.datetime_input("Bitiş (yerel)", value=now_local)
+        end_date = st.date_input("Bitiş tarihi", value=now_local.date(), key="en_date")
+        end_time = st.time_input("Bitiş saati", value=time(hour=now_local.hour, minute=now_local.minute), key="en_time")
+
     if st.button("Kaydı Oluştur", type="primary"):
+        start_local = to_local_datetime(start_date, start_time)
+        end_local = to_local_datetime(end_date, end_time)
         if end_local < start_local:
             st.error("Bitiş başlangıçtan önce olamaz.")
             return
@@ -177,7 +164,6 @@ def page_list_export():
 
     if not df.empty:
         st.dataframe(df, use_container_width=True)
-        from io import BytesIO
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="faults", index=False)
