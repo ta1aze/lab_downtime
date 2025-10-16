@@ -276,7 +276,7 @@ def page_list_export():
         )
         if selected_id != st.session_state.edit_id:
             st.session_state.edit_id = selected_id
-            st.experimental_rerun()
+            st.rerun()
 
         # === Kayıt düzenleme paneli ===
         st.markdown("### Kayıt düzenle")
