@@ -3,6 +3,7 @@ import tempfile
 import traceback
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -245,11 +246,37 @@ def page_list_export():
         )
 
     if not df.empty:
+        # Durum kolonu (Açık/Kapalı)
+        df["durum"] = np.where(df["ended_utc"].isna(), "Açık", "Kapalı")
+
+        # Görüntüleme tablosu
         df_show = df.copy()
         df_show["Başlangıç (yerel)"] = df_show["started_utc"].apply(to_local_str)
         df_show["Bitiş (yerel)"]     = df_show["ended_utc"].apply(to_local_str)
         df_show["Süre (dk)"]         = df_show["duration_min"].fillna("")
-        st.dataframe(df_show[["id","cihaz","neden","Başlangıç (yerel)","Bitiş (yerel)","Süre (dk)"]], use_container_width=True)
+        st.dataframe(
+            df_show[["id","cihaz","durum","neden","Başlangıç (yerel)","Bitiş (yerel)","Süre (dk)"]],
+            use_container_width=True
+        )
+
+        # --- Hızlı seçim: listeden tıkla → detay formu aşağıda açılır
+        st.markdown("#### Detaya git")
+        labels = {
+            int(r.id): f"#{int(r.id)} | {r.cihaz} | {('Açık' if pd.isna(r.ended_utc) else 'Kapalı')} | {to_local_str(r.started_utc)}"
+            for _, r in df.iterrows()
+        }
+        if "edit_id" not in st.session_state:
+            st.session_state.edit_id = int(df.iloc[0]["id"])
+
+        selected_id = st.selectbox(
+            "Kayıt seçin",
+            options=list(labels.keys()),
+            index=list(labels.keys()).index(st.session_state.edit_id) if st.session_state.get("edit_id") in labels else 0,
+            format_func=lambda x: labels[x],
+        )
+        if selected_id != st.session_state.edit_id:
+            st.session_state.edit_id = selected_id
+            st.experimental_rerun()
 
         # === Kayıt düzenleme paneli ===
         st.markdown("### Kayıt düzenle")
@@ -259,7 +286,7 @@ def page_list_export():
         device_map_name2id = {row["name"]: int(row["id"]) for _, row in devs.iterrows()}
         device_choices = list(device_map_name2id.keys())
 
-        edit_id = st.selectbox("Düzenlenecek kayıt (ID)", options=df["id"].tolist(), format_func=lambda x: f"#{x}")
+        edit_id = int(st.session_state.edit_id)
         row = df.loc[df["id"] == edit_id].iloc[0]
 
         def _to_local_dt(utc_val):
