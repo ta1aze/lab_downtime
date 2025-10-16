@@ -236,7 +236,7 @@ def page_list_export():
     with connect() as conn:
         df = pd.read_sql(
             text("""
-                SELECT f.id, d.name AS cihaz, f.reason AS neden, f.started_utc, f.ended_utc, f.duration_min
+                SELECT f.id, d.name AS cihaz, f.reason AS neden, f.started_utc, f.ended_utc, f.duration_min, f.created_at
                 FROM faults f JOIN devices d ON d.id=f.device_id
                 WHERE f.started_utc BETWEEN :a AND :b
                 ORDER BY f.started_utc DESC
@@ -251,10 +251,19 @@ def page_list_export():
         df_show["Süre (dk)"]         = df_show["duration_min"].fillna("")
         st.dataframe(df_show[["id","cihaz","neden","Başlangıç (yerel)","Bitiş (yerel)","Süre (dk)"]], use_container_width=True)
 
+        # === Excel için tz-aware -> tz-naive dönüşüm (UTC) ===
+        df_x = df.copy()
+        for col in ["started_utc", "ended_utc", "created_at"]:
+            if col in df_x.columns:
+                s = pd.to_datetime(df_x[col], errors="coerce", utc=True)
+                # Excel yazımı için tz-naive (UTC) oluştur
+                s = s.dt.tz_convert("UTC").dt.tz_localize(None)
+                df_x[col] = s
+
         from io import BytesIO
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            df.to_excel(w, sheet_name="faults", index=False)
+            df_x.to_excel(w, sheet_name="faults", index=False)
         st.download_button("Excel (XLSX) indir", data=buf.getvalue(),
                            file_name="faults.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
