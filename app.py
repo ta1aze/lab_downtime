@@ -251,12 +251,86 @@ def page_list_export():
         df_show["Süre (dk)"]         = df_show["duration_min"].fillna("")
         st.dataframe(df_show[["id","cihaz","neden","Başlangıç (yerel)","Bitiş (yerel)","Süre (dk)"]], use_container_width=True)
 
+        # === Kayıt düzenleme paneli ===
+        st.markdown("### Kayıt düzenle")
+        # Cihaz listesi
+        with connect() as conn2:
+            devs = pd.read_sql(text("SELECT id, name FROM devices ORDER BY name"), conn2)
+        device_map_name2id = {row["name"]: int(row["id"]) for _, row in devs.iterrows()}
+        device_choices = list(device_map_name2id.keys())
+
+        edit_id = st.selectbox("Düzenlenecek kayıt (ID)", options=df["id"].tolist(), format_func=lambda x: f"#{x}")
+        row = df.loc[df["id"] == edit_id].iloc[0]
+
+        def _to_local_dt(utc_val):
+            if pd.isna(utc_val) or utc_val is None:
+                return None
+            return pd.to_datetime(utc_val, utc=True).tz_convert(TZ)
+
+        started_local = _to_local_dt(row["started_utc"])
+        ended_local   = _to_local_dt(row["ended_utc"])
+
+        with st.form("edit_fault_form", clear_on_submit=False):
+            cur_device_name = row["cihaz"] if row.get("cihaz", None) else (device_choices[0] if device_choices else "")
+            idx = device_choices.index(cur_device_name) if cur_device_name in device_choices else 0
+            new_device_name = st.selectbox("Cihaz", device_choices, index=idx)
+
+            new_reason = st.text_input("Arıza nedeni (opsiyonel)", value=row.get("neden", "") or "")
+
+            c3, c4 = st.columns(2)
+            with c3:
+                st_date = st.date_input("Başlangıç tarihi", value=started_local.date())
+                st_time_val = st.time_input("Başlangıç saati", value=time(started_local.hour, started_local.minute))
+            with c4:
+                end_none = st.checkbox("Bitiş yok (açık arıza)", value=pd.isna(row["ended_utc"]))
+                if ended_local is None:
+                    ended_local = started_local
+                en_date = st.date_input("Bitiş tarihi", value=ended_local.date(), disabled=end_none)
+                en_time_val = st.time_input("Bitiş saati", value=time(ended_local.hour, ended_local.minute), disabled=end_none)
+
+            saved = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
+
+        if saved:
+            st_local = datetime.combine(st_date, st_time_val).replace(tzinfo=TZ)
+            start_iso2 = st_local.astimezone(timezone.utc).isoformat()
+            if end_none:
+                end_iso2 = None
+                dur2 = None
+            else:
+                en_local = datetime.combine(en_date, en_time_val).replace(tzinfo=TZ)
+                if en_local < st_local:
+                    st.error("Bitiş başlangıçtan önce olamaz.")
+                    st.stop()
+                end_iso2 = en_local.astimezone(timezone.utc).isoformat()
+                dur2 = max(0, int((pd.to_datetime(end_iso2, utc=True) - pd.to_datetime(start_iso2, utc=True)).total_seconds() // 60))
+            try:
+                with connect() as conn3:
+                    conn3.execute(text("""
+                        UPDATE faults
+                           SET device_id    = :d,
+                               reason       = :r,
+                               started_utc  = :s,
+                               ended_utc    = :e,
+                               duration_min = :m
+                         WHERE id = :id
+                    """), {
+                        "d": device_map_name2id[new_device_name],
+                        "r": (new_reason or None),
+                        "s": start_iso2,
+                        "e": end_iso2,
+                        "m": dur2,
+                        "id": int(edit_id),
+                    })
+                st.success(f"#{edit_id} güncellendi.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Güncelleme hatası: {e}")
+
         # === Excel için tz-aware -> tz-naive dönüşüm (UTC) ===
         df_x = df.copy()
         for col in ["started_utc", "ended_utc", "created_at"]:
             if col in df_x.columns:
                 s = pd.to_datetime(df_x[col], errors="coerce", utc=True)
-                # Excel yazımı için tz-naive (UTC) oluştur
                 s = s.dt.tz_convert("UTC").dt.tz_localize(None)
                 df_x[col] = s
 
