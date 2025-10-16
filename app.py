@@ -133,11 +133,20 @@ def compute_duration_min(start_iso: str, end_iso: str):
     e = pd.to_datetime(end_iso, utc=True)
     return max(0, int((e - s).total_seconds() // 60))
 
-def to_local_str(iso_ts: str | None):
-    if not iso_ts:
+def to_local_str(iso_ts):
+    # Güvenli: NaT/None/boş değerler
+    try:
+        if iso_ts is None or pd.isna(iso_ts):
+            return ""
+    except Exception:
+        pass
+    try:
+        dt = pd.to_datetime(iso_ts, utc=True)
+        if getattr(dt, 'tzinfo', None) is None:
+            dt = dt.tz_localize('UTC')
+        return dt.tz_convert(TZ).strftime('%Y-%m-%d %H:%M')
+    except Exception:
         return ""
-    dt = pd.to_datetime(iso_ts, utc=True).tz_convert(TZ)
-    return dt.strftime("%Y-%m-%d %H:%M")
 
 # ---------- Sayfalar ----------
 def page_devices(is_admin: bool):
