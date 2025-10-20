@@ -14,7 +14,6 @@ from contextlib import contextmanager
 APP_TITLE = "Cihaz Arıza Takip — Kalıcı (PostgreSQL destekli)"
 TZ = ZoneInfo("Europe/Istanbul")
 
-# ---------- DB seçimi: DATABASE_URL varsa Postgres, yoksa HOME altında SQLite ----------
 def _get_database_url():
     url = None
     try:
@@ -40,7 +39,6 @@ def _mk_sqlite_engine():
 DB_URL = _get_database_url()
 USING_POSTGRES = bool(DB_URL)
 
-# Engine oluşturma (Neon için timeout + fallback)
 if USING_POSTGRES:
     if "sslmode=" not in DB_URL:
         DB_URL += ("&" if "?" in DB_URL else "?") + "sslmode=require"
@@ -49,14 +47,13 @@ if USING_POSTGRES:
             DB_URL,
             pool_pre_ping=True,
             pool_recycle=300,
-            connect_args={"connect_timeout": 10},  # saniye
+            connect_args={"connect_timeout": 10},
         )
-        # Hızlı ping
         with engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
         DB_INFO = f"PostgreSQL: {DB_URL.split('@')[-1]}"
     except Exception as e:
-        st.warning(f"PostgreSQL bağlantısı başarısız (timeout/erişim). SQLite'a düşüldü. Ayrıntı: {e}")
+        st.warning(f"PostgreSQL bağlantısı başarısız. SQLite'a düşüldü. Ayrıntı: {e}")
         engine: Engine = _mk_sqlite_engine()
         DB_INFO = f"SQLite: {_sqlite_path()}"
         USING_POSTGRES = False
@@ -64,13 +61,12 @@ else:
     engine: Engine = _mk_sqlite_engine()
     DB_INFO = f"SQLite: {_sqlite_path()}"
 
+from contextlib import contextmanager
 @contextmanager
 def connect():
-    # Otomatik transaction / commit
     with engine.begin() as conn:
         yield conn
 
-# ---------- Şema ----------
 SCHEMA_PG = """
 CREATE TABLE IF NOT EXISTS devices (
   id SERIAL PRIMARY KEY,
@@ -95,7 +91,6 @@ def init_db():
     with connect() as conn:
         conn.exec_driver_sql(SCHEMA_PG if USING_POSTGRES else SCHEMA_SQLITE)
 
-# ---------- Admin girişi (cihaz ekleme yetkisi) ----------
 def admin_login_ui():
     if "admin_authed" not in st.session_state:
         st.session_state.admin_authed = False
@@ -122,7 +117,6 @@ def admin_login_ui():
                 else:
                     st.error("Geçersiz şifre.")
 
-# ---------- Yardımcılar ----------
 def normalize_name(name: str) -> str:
     return " ".join((name or "").strip().split())
 
@@ -134,7 +128,6 @@ def compute_duration_min(start_iso: str, end_iso: str):
     return max(0, int((e - s).total_seconds() // 60))
 
 def to_local_str(iso_ts):
-    # Güvenli: NaT/None/boş değerler
     try:
         if iso_ts is None or pd.isna(iso_ts):
             return ""
@@ -142,17 +135,15 @@ def to_local_str(iso_ts):
         pass
     try:
         dt = pd.to_datetime(iso_ts, utc=True)
-        if getattr(dt, 'tzinfo', None) is None:
-            dt = dt.tz_localize('UTC')
-        return dt.tz_convert(TZ).strftime('%Y-%m-%d %H:%M')
+        if getattr(dt, "tzinfo", None) is None:
+            dt = dt.tz_localize("UTC")
+        return dt.tz_convert(TZ).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return ""
 
-# ---------- Sayfalar ----------
 def page_devices(is_admin: bool):
     st.subheader("Cihazlar")
     st.caption(f"Veritabanı: {DB_INFO}")
-
     if is_admin:
         with st.form("add_dev", clear_on_submit=True):
             raw = st.text_input("Yeni cihaz adı", placeholder="Örn. Cobas t711")
@@ -164,18 +155,12 @@ def page_devices(is_admin: bool):
             else:
                 try:
                     with connect() as conn:
-                        # SQLAlchemy stili parametre bağlama
-                        dup = conn.execute(
-                            text("SELECT 1 FROM devices WHERE lower(name)=lower(:n) LIMIT 1"),
-                            {"n": name}
-                        ).first()
+                        dup = conn.execute(text("SELECT 1 FROM devices WHERE lower(name)=lower(:n) LIMIT 1"), {"n": name}).first()
                         if dup:
                             st.warning("Bu cihaz adı zaten mevcut.")
                         else:
-                            conn.execute(
-                                text("INSERT INTO devices(name, created_at) VALUES (:n, :c)"),
-                                {"n": name, "c": datetime.now(timezone.utc).isoformat()}
-                            )
+                            conn.execute(text("INSERT INTO devices(name, created_at) VALUES (:n, :c)"),
+                                         {"n": name, "c": datetime.now(timezone.utc).isoformat()})
                             st.success(f"Eklendi: {name}")
                 except Exception as e:
                     st.error(f"Ekleme hatası: {e}")
@@ -183,7 +168,6 @@ def page_devices(is_admin: bool):
                         st.code(traceback.format_exc())
     else:
         st.info("Cihaz ekleme yetkisi yalnızca **admin** kullanıcıda.")
-
     with connect() as conn:
         df = pd.read_sql(text("SELECT id, name, created_at FROM devices ORDER BY id DESC"), conn)
     st.dataframe(df, use_container_width=True)
@@ -195,32 +179,27 @@ def page_new_fault():
     if devs.empty:
         st.info("Önce admin tarafından cihaz eklenmelidir.")
         return
-
     device_map = {row["name"]: int(row["id"]) for _, row in devs.iterrows()}
     dev_label = st.selectbox("Cihaz", list(device_map.keys()))
     reason = st.text_input("Arıza nedeni (opsiyonel)")
-
     now_local = pd.Timestamp.now(TZ).to_pydatetime()
     c1, c2 = st.columns(2)
     with c1:
-        st_date = st.date_input("Başlangıç tarihi", value=now_local.date(), key="st_date")
-        st_time_val = st.time_input("Başlangıç saati", value=time(hour=now_local.hour, minute=now_local.minute), key="st_time")
+        st_date = st.date_input("Başlangıç tarihi", value=now_local.date(), key="new_st_date")
+        st_time_val = st.time_input("Başlangıç saati", value=time(hour=now_local.hour, minute=now_local.minute), key="new_st_time")
     with c2:
-        end_none = st.checkbox("Bitiş yok (arızaya devam)", value=False, key="end_none")
-        en_date = st.date_input("Bitiş tarihi", value=now_local.date(), key="en_date", disabled=end_none)
-        en_time_val = st.time_input("Bitiş saati", value=time(hour=now_local.hour, minute=now_local.minute), key="en_time", disabled=end_none)
-
+        end_none = st.checkbox("Bitiş yok (arızaya devam)", value=False, key="new_end_none")
+        en_date = st.date_input("Bitiş tarihi", value=now_local.date(), key="new_en_date", disabled=end_none)
+        en_time_val = st.time_input("Bitiş saati", value=time(hour=now_local.hour, minute=now_local.minute), key="new_en_time", disabled=end_none)
     if st.button("Kaydı Oluştur", type="primary"):
         st_local = datetime.combine(st_date, st_time_val).replace(tzinfo=TZ)
         start_iso = st_local.astimezone(timezone.utc).isoformat()
         if end_none:
-            end_iso = None
-            dur = None
+            end_iso = None; dur = None
         else:
             en_local = datetime.combine(en_date, en_time_val).replace(tzinfo=TZ)
             if en_local < st_local:
-                st.error("Bitiş başlangıçtan önce olamaz.")
-                return
+                st.error("Bitiş başlangıçtan önce olamaz."); return
             end_iso = en_local.astimezone(timezone.utc).isoformat()
             dur = compute_duration_min(start_iso, end_iso)
         with connect() as conn:
@@ -239,62 +218,41 @@ def page_list_export():
         dfrom = st.date_input("Başlangıç", value=today.replace(day=1))
     with c2:
         dto = st.date_input("Bitiş", value=today)
-
     start_iso = pd.Timestamp.combine(dfrom, pd.Timestamp.min.time()).tz_localize(TZ).tz_convert("UTC").isoformat()
     end_iso   = pd.Timestamp.combine(dto,   pd.Timestamp.max.time()).tz_localize(TZ).tz_convert("UTC").isoformat()
-
     with connect() as conn:
-        df = pd.read_sql(
-            text("""
-                SELECT f.id, d.name AS cihaz, f.reason AS neden, f.started_utc, f.ended_utc, f.duration_min, f.created_at
-                FROM faults f JOIN devices d ON d.id=f.device_id
-                WHERE f.started_utc BETWEEN :a AND :b
-                ORDER BY f.started_utc DESC
-            """),
-            conn, params={"a": start_iso, "b": end_iso}
-        )
-
+        df = pd.read_sql(text("""
+            SELECT f.id, d.name AS cihaz, f.reason AS neden, f.started_utc, f.ended_utc, f.duration_min, f.created_at
+            FROM faults f JOIN devices d ON d.id=f.device_id
+            WHERE f.started_utc BETWEEN :a AND :b
+            ORDER BY f.started_utc DESC
+        """), conn, params={"a": start_iso, "b": end_iso})
     if not df.empty:
-        # Durum kolonu (Açık/Kapalı)
         df["durum"] = np.where(df["ended_utc"].isna(), "Açık", "Kapalı")
-
-        # Görüntüleme tablosu
         df_show = df.copy()
         df_show["Başlangıç (yerel)"] = df_show["started_utc"].apply(to_local_str)
         df_show["Bitiş (yerel)"]     = df_show["ended_utc"].apply(to_local_str)
         df_show["Süre (dk)"]         = df_show["duration_min"].fillna("")
-        st.dataframe(
-            df_show[["id","cihaz","durum","neden","Başlangıç (yerel)","Bitiş (yerel)","Süre (dk)"]],
-            use_container_width=True
-        )
+        st.dataframe(df_show[["id","cihaz","durum","neden","Başlangıç (yerel)","Bitiş (yerel)","Süre (dk)"]], use_container_width=True)
 
-        # --- Hızlı seçim: listeden tıkla → detay formu aşağıda açılır
         st.markdown("#### Detaya git")
-        labels = {
-            int(r.id): f"#{int(r.id)} | {r.cihaz} | {('Açık' if pd.isna(r.ended_utc) else 'Kapalı')} | {to_local_str(r.started_utc)}"
-            for _, r in df.iterrows()
-        }
+        labels = {int(r.id): f"#{int(r.id)} | {r.cihaz} | {('Açık' if pd.isna(r.ended_utc) else 'Kapalı')} | {to_local_str(r.started_utc)}"
+                  for _, r in df.iterrows()}
         if "edit_id" not in st.session_state:
             st.session_state.edit_id = int(df.iloc[0]["id"])
-
-        selected_id = st.selectbox(
-            "Kayıt seçin",
-            options=list(labels.keys()),
-            index=list(labels.keys()).index(st.session_state.edit_id) if st.session_state.get("edit_id") in labels else 0,
-            format_func=lambda x: labels[x],
-        )
+        selected_id = st.selectbox("Kayıt seçin", options=list(labels.keys()),
+                                   index=list(labels.keys()).index(st.session_state.edit_id) if st.session_state.get("edit_id") in labels else 0,
+                                   format_func=lambda x: labels[x])
         if selected_id != st.session_state.edit_id:
             st.session_state.edit_id = selected_id
             st.rerun()
 
-        # === Kayıt düzenleme paneli ===
+        # --- Düzenleme paneli ---
         st.markdown("### Kayıt düzenle")
-        # Cihaz listesi
         with connect() as conn2:
             devs = pd.read_sql(text("SELECT id, name FROM devices ORDER BY name"), conn2)
         device_map_name2id = {row["name"]: int(row["id"]) for _, row in devs.iterrows()}
         device_choices = list(device_map_name2id.keys())
-
         edit_id = int(st.session_state.edit_id)
         row = df.loc[df["id"] == edit_id].iloc[0]
 
@@ -309,34 +267,28 @@ def page_list_export():
         with st.form("edit_fault_form", clear_on_submit=False):
             cur_device_name = row["cihaz"] if row.get("cihaz", None) else (device_choices[0] if device_choices else "")
             idx = device_choices.index(cur_device_name) if cur_device_name in device_choices else 0
-            new_device_name = st.selectbox("Cihaz", device_choices, index=idx)
-
-            new_reason = st.text_input("Arıza nedeni (opsiyonel)", value=row.get("neden", "") or "")
-
+            new_device_name = st.selectbox("Cihaz", device_choices, index=idx, key=f"edit_dev_{edit_id}")
+            new_reason = st.text_input("Arıza nedeni (opsiyonel)", value=row.get("neden", "") or "", key=f"edit_reason_{edit_id}")
             c3, c4 = st.columns(2)
             with c3:
-                st_date = st.date_input("Başlangıç tarihi", value=started_local.date())
-                st_time_val = st.time_input("Başlangıç saati", value=time(started_local.hour, started_local.minute))
+                st_date = st.date_input("Başlangıç tarihi", value=started_local.date(), key=f"edit_stdate_{edit_id}")
+                st_time_val = st.time_input("Başlangıç saati", value=time(started_local.hour, started_local.minute), key=f"edit_sttime_{edit_id}")
             with c4:
-                end_none = st.checkbox("Bitiş yok (açık arıza)", value=pd.isna(row["ended_utc"]))
-                if ended_local is None:
-                    ended_local = started_local
-                en_date = st.date_input("Bitiş tarihi", value=ended_local.date(), disabled=end_none)
-                en_time_val = st.time_input("Bitiş saati", value=time(ended_local.hour, ended_local.minute), disabled=end_none)
-
+                end_none = st.checkbox("Bitiş yok (açık arıza)", value=pd.isna(row["ended_utc"]), key=f"edit_endnone_{edit_id}")
+                base_end = ended_local or started_local
+                en_date = st.date_input("Bitiş tarihi", value=base_end.date(), disabled=end_none, key=f"edit_enddate_{edit_id}")
+                en_time_val = st.time_input("Bitiş saati", value=time(base_end.hour, base_end.minute), disabled=end_none, key=f"edit_endtime_{edit_id}")
             saved = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
 
         if saved:
             st_local = datetime.combine(st_date, st_time_val).replace(tzinfo=TZ)
             start_iso2 = st_local.astimezone(timezone.utc).isoformat()
             if end_none:
-                end_iso2 = None
-                dur2 = None
+                end_iso2 = None; dur2 = None
             else:
                 en_local = datetime.combine(en_date, en_time_val).replace(tzinfo=TZ)
                 if en_local < st_local:
-                    st.error("Bitiş başlangıçtan önce olamaz.")
-                    st.stop()
+                    st.error("Bitiş başlangıçtan önce olamaz."); st.stop()
                 end_iso2 = en_local.astimezone(timezone.utc).isoformat()
                 dur2 = max(0, int((pd.to_datetime(end_iso2, utc=True) - pd.to_datetime(start_iso2, utc=True)).total_seconds() // 60))
             try:
@@ -349,27 +301,19 @@ def page_list_export():
                                ended_utc    = :e,
                                duration_min = :m
                          WHERE id = :id
-                    """), {
-                        "d": device_map_name2id[new_device_name],
-                        "r": (new_reason or None),
-                        "s": start_iso2,
-                        "e": end_iso2,
-                        "m": dur2,
-                        "id": int(edit_id),
-                    })
-                st.success(f"#{edit_id} güncellendi.")
-                st.rerun()
+                    """), {"d": device_map_name2id[new_device_name], "r": (new_reason or None),
+                           "s": start_iso2, "e": end_iso2, "m": dur2, "id": int(edit_id)})
+                st.success(f"#{edit_id} güncellendi."); st.rerun()
             except Exception as e:
                 st.error(f"Güncelleme hatası: {e}")
 
-        # === Excel için tz-aware -> tz-naive dönüşüm (UTC) ===
+        # Excel için tz-naive
         df_x = df.copy()
         for col in ["started_utc", "ended_utc", "created_at"]:
             if col in df_x.columns:
                 s = pd.to_datetime(df_x[col], errors="coerce", utc=True)
                 s = s.dt.tz_convert("UTC").dt.tz_localize(None)
                 df_x[col] = s
-
         from io import BytesIO
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
@@ -383,33 +327,20 @@ def page_list_export():
 
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="🧪", layout="wide")
-    st.title(APP_TITLE)
-    st.caption(f"Veritabanı: {DB_INFO}")
+    st.title(APP_TITLE); st.caption(f"Veritabanı: {DB_INFO}")
     admin_login_ui()
-
-    # Bakım yardımcıları (opsiyonel)
     with st.sidebar.expander("⚙️ Bakım"):
         if st.button("Önbelleği Temizle"):
-            st.cache_data.clear(); st.cache_resource.clear()
-            st.success("Önbellek temizlendi."); st.rerun()
-
+            st.cache_data.clear(); st.cache_resource.clear(); st.success("Önbellek temizlendi."); st.rerun()
     is_admin = bool(st.session_state.get("admin_authed", False))
-    menu = ["Arıza Kaydı", "Kayıtlar & Excel"]
-    if is_admin:
-        menu.insert(0, "Cihazlar")
+    menu = ["Arıza Kaydı", "Kayıtlar & Excel"]; 
+    if is_admin: menu.insert(0, "Cihazlar")
     page = st.sidebar.radio("Menü", menu, index=0)
-
-    if page == "Cihazlar":
-        page_devices(is_admin=True)
-    elif page == "Kayıtlar & Excel":
-        page_list_export()
-    else:
-        page_new_fault()
+    if page == "Cihazlar": page_devices(is_admin=True)
+    elif page == "Kayıtlar & Excel": page_list_export()
+    else: page_new_fault()
 
 if __name__ == "__main__":
-    try:
-        init_db()
-    except Exception as e:
-        st.error(f"DB init error: {e}")
-        st.stop()
+    try: init_db()
+    except Exception as e: st.error(f"DB init error: {e}"); st.stop()
     main()
